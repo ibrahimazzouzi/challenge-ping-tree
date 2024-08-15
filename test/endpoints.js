@@ -13,6 +13,7 @@ test.beforeEach(async () => {
 
 const delAsync = promisify(client.del).bind(client)
 const keysAsync = promisify(client.keys).bind(client)
+const smembersAsync = promisify(client.smembers).bind(client)
 
 async function cleanup () {
   try {
@@ -329,6 +330,79 @@ test.serial.cb('updateTargetById - prevent updating non existing target', functi
     t.is(res.body.error, 'Not Found', 'correct error message')
     t.end()
   }).end(JSON.stringify(targetUpdateBody))
+})
+
+test.serial.cb('updateTargetById - update target check geoState and hour records updated', function (t) {
+  const createUrl = '/api/targets'
+  const newTarget = {
+    id: '1',
+    url: 'http://example.com',
+    value: '0.50',
+    maxAcceptsPerDay: '10',
+    accept: {
+      geoState: {
+        $in: ['ca', 'ny']
+      },
+      hour: {
+        $in: ['13', '14', '15']
+      }
+    }
+  }
+
+  servertest(server(), createUrl, { encoding: 'json', method: 'POST' }, function (err, createdRes) {
+    const { statusCode: createdStatusCode, body: createdBody } = createdRes
+    const { message: createdMessage, target: createdTarget } = createdBody
+
+    t.falsy(err, 'no error')
+    t.is(createdStatusCode, 200, 'correct statusCode')
+    t.is(createdMessage, 'new target created successfully', 'target created')
+    t.deepEqual(newTarget, createdTarget, 'target value is correct')
+
+    const targetToUpdateId = newTarget.id
+    const updateUrl = `/api/target/${targetToUpdateId}`
+    const targetUpdateBody = {
+      ...newTarget,
+      maxAcceptsPerDay: '20',
+      accept: {
+        geoState: { $in: ['tx', 'fl'] },
+        hour: { $in: ['16', '17'] }
+      }
+    }
+
+    servertest(server(), updateUrl, { encoding: 'json', method: 'POST' }, function (err, res) {
+      t.falsy(err, 'no error')
+      t.is(res.statusCode, 200, 'correct statusCode')
+      t.is(res.body.message, 'target updated successfully', 'target updated')
+      t.is(res.body.target.maxAcceptsPerDay, '20', 'target maxAcceptsPerDay updated')
+
+      Promise.all([
+        smembersAsync('geoState:ca'),
+        smembersAsync('geoState:ny'),
+        smembersAsync('hour:13'),
+        smembersAsync('hour:14'),
+        smembersAsync('hour:15')
+      ]).then(([caTargets, nyTargets, hour13Targets, hour14Targets, hour15Targets]) => {
+        t.false(caTargets.includes(targetToUpdateId), 'target id should not be in geoState:ca')
+        t.false(nyTargets.includes(targetToUpdateId), 'target id should not be in geoState:ny')
+        t.false(hour13Targets.includes(targetToUpdateId), 'target id should not be in hour:13')
+        t.false(hour14Targets.includes(targetToUpdateId), 'target id should not be in hour:14')
+        t.false(hour15Targets.includes(targetToUpdateId), 'target id should not be in hour:15')
+
+        Promise.all([
+          smembersAsync('geoState:tx'),
+          smembersAsync('geoState:fl'),
+          smembersAsync('hour:16'),
+          smembersAsync('hour:17')
+        ]).then(([txTargets, flTargets, hour16Targets, hour17Targets]) => {
+          t.true(txTargets.includes(targetToUpdateId), 'target id should be in geoState:tx')
+          t.true(flTargets.includes(targetToUpdateId), 'target id should be in geoState:fl')
+          t.true(hour16Targets.includes(targetToUpdateId), 'target id should be in hour:16')
+          t.true(hour17Targets.includes(targetToUpdateId), 'target id should be in hour:17')
+          t.end()
+        })
+      })
+    }).end(JSON.stringify(targetUpdateBody))
+  }).end(JSON.stringify(newTarget))
 })
 
 test.serial.cb('getVisitorDecision - get decision with invalid visitor data', function (t) {
